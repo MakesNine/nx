@@ -105,7 +105,11 @@ function generateNgrxFiles(context: RequestContext) {
       sourceDir: './',
       flat: false
     }),
-    moveToNxMonoTree(context.featureName, context.moduleDir)
+    moveToNxMonoTree(
+      context.featureName,
+      context.moduleDir,
+      context.options.directory
+    )
   ]);
 }
 
@@ -116,9 +120,11 @@ function generateNgrxFiles(context: RequestContext) {
 function addLoadDataToActions(context: RequestContext): Rule {
   return (host: Tree) => {
     const clazzName = toClassName(context.featureName);
-    const componentPath = `${context.moduleDir}/+state/${stringUtils.dasherize(
-      context.featureName
-    )}.actions.ts`;
+    const componentPath = path.join(
+      context.moduleDir,
+      context.options.directory,
+      `${stringUtils.dasherize(context.featureName)}.actions.ts`
+    );
 
     const text = host.read(componentPath);
     if (text === null) {
@@ -371,11 +377,11 @@ function addNgRxToPackageJson() {
  *    `/apps/<ngrxFeatureName>/`
  *
  * For Nx monorepo, however, we need to move the files to either
- *  a) apps/<appName>/src/app/+state, or
- *  b) libs/<libName>/src/+state
+ *  a) apps/<appName>/src/app/<directory>, or
+ *  b) libs/<libName>/src/<directory>
  */
-function moveToNxMonoTree(ngrxFeatureName, nxDir): Rule {
-  return move(`app/${ngrxFeatureName}`, path.join(nxDir, '+state'));
+function moveToNxMonoTree(ngrxFeatureName, nxDir, directory): Rule {
+  return move(`app/${ngrxFeatureName}`, path.join(nxDir, directory));
 }
 
 /**

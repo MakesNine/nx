@@ -124,10 +124,9 @@ describe('ngrx', () => {
       '!environment.production ? [storeFreeze] : []'
     );
 
-    // @TODO - fix
-    // expect(
-    //   tree.exists(`/apps/myapp/src/app/my-custom-state/state.actions.ts`)
-    // ).toBeTruthy();
+    expect(
+      tree.exists(`/apps/myapp/src/app/my-custom-state/state.actions.ts`)
+    ).toBeTruthy();
   });
 
   it('should only add files', () => {

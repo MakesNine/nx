@@ -41,7 +41,7 @@ describe('ngrx', () => {
         describe('appReducer', () => {
           it('should work', () => {
             const state: App = {rootCount: 0};
-            const action: DataLoaded = {type: 'DATA_LOADED', payload: {}};
+            const action: DataLoaded = new DataLoaded({});
             const actual = appReducer(state, action);
             expect(actual).toEqual({rootCount: 0});
           });
