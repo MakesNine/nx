@@ -34,8 +34,8 @@ describe('ngrx', () => {
       updateFile(
         'apps/myapp/src/app/+state/app.reducer.spec.ts',
         `
-        import { appReducer } from './app.reducer';
         import { App } from './app.interfaces';
+        import { appReducer } from './app.reducer';
         import { DataLoaded } from './app.actions';
         
         describe('appReducer', () => {

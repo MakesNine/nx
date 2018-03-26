@@ -15,7 +15,8 @@ import {
   Change,
   InsertChange,
   NoopChange,
-  RemoveChange
+  RemoveChange,
+  ReplaceChange
 } from '@schematics/angular/utility/change';
 
 import * as ts from 'typescript';
@@ -533,6 +534,10 @@ export function insert(host: Tree, modulePath: string, changes: Change[]) {
       recorder.remove((<any>change).pos - 1, (<any>change).toRemove.length + 1);
     } else if (change instanceof NoopChange) {
       // do nothing
+    } else if (change instanceof ReplaceChange) {
+      const action = <any>change;
+      recorder.remove(action.pos + 1, action.oldText.length);
+      recorder.insertLeft(action.pos + 1, action.newText);
     } else {
       throw new Error(`Unexpected Change '${change}'`);
     }

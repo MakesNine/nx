@@ -258,4 +258,31 @@ describe('ngrx', () => {
       'type UserActions = User | LoadData | DataLoaded'
     );
   });
+
+  it('should enhance the ngrx reducer', () => {
+    const appConfig = getAppConfig();
+    const tree = schematicRunner.runSchematic(
+      'ngrx',
+      {
+        name: 'user',
+        module: appConfig.appModule
+      },
+      appTree
+    );
+
+    const statePath = `${findModuleParent(appConfig.appModule)}/+state`;
+    const content = getFileContent(tree, `${statePath}/user.reducer.ts`);
+
+    expect(content).not.toContain(`export interface State {  }`);
+    expect(content).not.toContain('function reducer');
+
+    expect(content).toContain(`import { User } from \'./user.interfaces\'`);
+    expect(content).toContain(
+      `import { UserActions, UserActionTypes } from \'./user.actions\'`
+    );
+    expect(content).toContain('function userReducer');
+    expect(content).toContain(
+      'function userReducer(state = initialState, action: UserActions): User'
+    );
+  });
 });

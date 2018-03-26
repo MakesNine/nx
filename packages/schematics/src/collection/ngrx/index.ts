@@ -12,6 +12,17 @@ import {
   Tree,
   url
 } from '@angular-devkit/schematics';
+import {
+  Change,
+  InsertChange,
+  NoopChange,
+  RemoveChange,
+  ReplaceChange
+} from '@schematics/angular/utility/change';
+import {
+  findNodes,
+  insertAfterLastOccurrence
+} from '@schematics/angular/utility/ast-utils';
 import { insertImport } from '@schematics/angular/utility/route-utils';
 import { stripIndents } from '@angular-devkit/core/src/utils/literals';
 
@@ -72,8 +83,8 @@ export default function generateNgrxCollection(_options: NgrxOptions): Rule {
       branchAndMerge(generateNxFiles(context)),
 
       addImportsToModule(context),
-      addLoadDataToActions(context),
-      // addDataLoadedToReducer(context),
+      updateNgrxActions(context),
+      updateNgrxReducers(context),
 
       options.skipPackageJson ? noop() : addNgRxToPackageJson()
     ]);
@@ -117,19 +128,16 @@ function generateNgrxFiles(context: RequestContext) {
  * Add LoadData and DataLoaded actions to <featureName>.actions.ts
  * See Ngrx Enhancement doc:  https://bit.ly/2I5QwxQ
  */
-function addLoadDataToActions(context: RequestContext): Rule {
+function updateNgrxActions(context: RequestContext): Rule {
   return (host: Tree) => {
     const clazzName = toClassName(context.featureName);
-    const componentPath = path.join(
-      context.moduleDir,
-      context.options.directory,
-      `${stringUtils.dasherize(context.featureName)}.actions.ts`
-    );
-
+    const componentPath = buildNameToNgrxFile(context, 'actions.ts');
     const text = host.read(componentPath);
+
     if (text === null) {
       throw new SchematicsException(`File ${componentPath} does not exist.`);
     }
+
     const sourceText = text.toString('utf-8');
     const source = ts.createSourceFile(
       componentPath,
@@ -180,8 +188,86 @@ function addLoadDataToActions(context: RequestContext): Rule {
 /**
  * Add DataLoaded action to <featureName>.reducer.ts
  */
-function addDataLoadedToReducer(context: RequestContext): Rule {
-  return noop();
+function updateNgrxReducers(context: RequestContext): Rule {
+  return (host: Tree) => {
+    const clazzName = toClassName(context.featureName);
+    const componentPath = buildNameToNgrxFile(context, 'reducer.ts');
+    const text = host.read(componentPath);
+
+    if (text === null) {
+      throw new SchematicsException(`File ${componentPath} does not exist.`);
+    }
+
+    const modulePath = context.options.module;
+    const sourceText = text.toString('utf-8');
+    const source = ts.createSourceFile(
+      componentPath,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true
+    );
+    const removeStateInterface = () => {
+      // Remove `export interface State {  }` since we have <featureName>.interfaces.ts
+      let action: Change = new NoopChange();
+
+      findNodes(source, ts.SyntaxKind.InterfaceDeclaration)
+        .filter((it: ts.InterfaceDeclaration) => it.name.getText() === 'State')
+        .map((it: ts.InterfaceDeclaration) => {
+          action = new RemoveChange(componentPath, it.pos, it.getText());
+        });
+      return action;
+    };
+    const updateReducerFn = () => {
+      let actions: Change[] = [];
+      findNodes(source, ts.SyntaxKind.FunctionDeclaration)
+        .filter((it: ts.FunctionDeclaration) => it.name.getText() === 'reducer')
+        .map((it: ts.FunctionDeclaration) => {
+          const fnName: ts.Identifier = it.name;
+          const typeName = findNodes(it, ts.SyntaxKind.Identifier).reduce(
+            (result: ts.Identifier, it: ts.Identifier): ts.Identifier => {
+              return !!result
+                ? result
+                : it.getText() === 'State' ? it : undefined;
+            },
+            undefined
+          );
+
+          actions = [
+            new ReplaceChange(
+              componentPath,
+              fnName.pos,
+              fnName.getText(),
+              `${toPropertyName(context.featureName)}Reducer`
+            ),
+            new ReplaceChange(
+              componentPath,
+              typeName.pos,
+              typeName.getText(),
+              clazzName
+            )
+          ];
+        });
+
+      return actions;
+    };
+
+    insert(host, componentPath, [
+      removeStateInterface(),
+      ...updateReducerFn(),
+      insertImport(
+        source,
+        modulePath,
+        clazzName,
+        `./${context.featureName}.interfaces`
+      ),
+      insertImport(
+        source,
+        modulePath,
+        `${clazzName}Actions`,
+        `./${context.featureName}.actions`
+      )
+    ]);
+  };
 }
 
 function addImportsToModule(context: RequestContext): Rule {
@@ -389,4 +475,12 @@ function moveToNxMonoTree(ngrxFeatureName, nxDir, directory): Rule {
  */
 function normalizeOptions(options: NgrxOptions): NgrxOptions {
   return { ...options, directory: toFileName(options.directory) };
+}
+
+function buildNameToNgrxFile(context: RequestContext, suffice: string) {
+  return path.join(
+    context.moduleDir,
+    context.options.directory,
+    `${stringUtils.dasherize(context.featureName)}.${suffice}`
+  );
 }
