@@ -9,8 +9,7 @@ import { Tree } from '@angular-devkit/schematics';
 import {
   findNodes,
   getDecoratorMetadata,
-  getSourceNodes,
-  insertAfterLastOccurrence
+  getSourceNodes
 } from '@schematics/angular/utility/ast-utils';
 import {
   Change,
@@ -18,9 +17,10 @@ import {
   NoopChange,
   RemoveChange
 } from '@schematics/angular/utility/change';
+
 import * as ts from 'typescript';
-import { toFileName } from './name-utils';
 import * as path from 'path';
+import { toFileName } from './name-utils';
 
 // This should be moved to @schematics/angular once it allows to pass custom expressions as providers
 function _addSymbolToNgModuleMetadata(
@@ -227,9 +227,10 @@ export function removeFromNgModule(
   }
 }
 
-function findClass(
+export function findClass(
   source: ts.SourceFile,
-  className: string
+  className: string,
+  silent: boolean = false
 ): ts.ClassDeclaration {
   const nodes = getSourceNodes(source);
 
@@ -239,7 +240,7 @@ function findClass(
       (<any>n).name.text === className
   )[0];
 
-  if (!clazz) {
+  if (!clazz && !silent) {
     throw new Error(`Cannot find class '${className}'`);
   }
 

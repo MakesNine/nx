@@ -2,6 +2,8 @@ import {
   apply,
   branchAndMerge,
   chain,
+  externalSchematic,
+  SchematicsException,
   mergeWith,
   move,
   noop,
@@ -10,41 +12,183 @@ import {
   Tree,
   url
 } from '@angular-devkit/schematics';
+import { insertImport } from '@schematics/angular/utility/route-utils';
+import { stripIndents } from '@angular-devkit/core/src/utils/literals';
 
-import {
-  names,
-  toClassName,
-  toFileName,
-  toPropertyName
-} from '../../utils/name-utils';
+import { NgrxOptions } from './schema';
 import * as path from 'path';
 import * as ts from 'typescript';
-import {
-  addImportToModule,
-  addProviderToModule,
-  insert
-} from '../../utils/ast-utils';
-import { insertImport } from '@schematics/angular/utility/route-utils';
-import { Schema } from './schema';
+import * as stringUtils from '../../utils/strings';
 import {
   ngrxVersion,
   routerStoreVersion,
   ngrxStoreFreezeVersion
 } from '../../lib-versions';
+
+import {
+  findModuleParent,
+  names,
+  toClassName,
+  toFileName,
+  toPropertyName
+} from '../../utils/name-utils';
+import {
+  addClass,
+  addEnumeratorValues,
+  addUnionTypes
+} from '../../utils/module-utils';
+import {
+  insert,
+  addImportToModule,
+  addProviderToModule
+} from '../../utils/ast-utils';
+
 import { serializeJson } from '../../utils/fileutils';
 import { wrapIntoFormat } from '../../utils/tasks';
 
-function addImportsToModule(name: string, options: Schema): Rule {
+/**
+ * Schematic request context
+ */
+export interface RequestContext {
+  featureName: string;
+  moduleDir: string;
+  options?: NgrxOptions;
+}
+
+/**
+ * Rule to generate the Nx 'ngrx' Collection
+ */
+export default function generateNgrxCollection(_options: NgrxOptions): Rule {
+  return wrapIntoFormat(() => {
+    const options = normalizeOptions(_options);
+    const context: RequestContext = {
+      featureName: options.name,
+      moduleDir: findModuleParent(options.module),
+      options
+    };
+
+    return chain([
+      branchAndMerge(generateNgrxFiles(context)),
+      branchAndMerge(generateNxFiles(context)),
+
+      addImportsToModule(context),
+      addLoadDataToActions(context),
+      // addDataLoadedToReducer(context),
+
+      options.skipPackageJson ? noop() : addNgRxToPackageJson()
+    ]);
+  });
+}
+
+// ********************************************************
+// Internal Function
+// ********************************************************
+
+/**
+ * Generate the Nx files that are NOT created by the @ngrx/schematic(s)
+ */
+function generateNxFiles(context: RequestContext) {
+  const templateSource = apply(url('./files'), [
+    template({ ...context.options, tmpl: '', ...names(context.featureName) }),
+    move(context.moduleDir)
+  ]);
+  return chain([mergeWith(templateSource)]);
+}
+
+/**
+ * Using @ngrx/schematics, generate scaffolding for 'feature': action, reducer, effect files
+ */
+function generateNgrxFiles(context: RequestContext) {
+  return chain([
+    externalSchematic('@ngrx/schematics', 'feature', {
+      name: context.featureName,
+      sourceDir: './',
+      flat: false
+    }),
+    moveToNxMonoTree(context.featureName, context.moduleDir)
+  ]);
+}
+
+/**
+ * Add LoadData and DataLoaded actions to <featureName>.actions.ts
+ * See Ngrx Enhancement doc:  https://bit.ly/2I5QwxQ
+ */
+function addLoadDataToActions(context: RequestContext): Rule {
   return (host: Tree) => {
-    if (options.onlyAddFiles) {
+    const clazzName = toClassName(context.featureName);
+    const componentPath = `${context.moduleDir}/+state/${stringUtils.dasherize(
+      context.featureName
+    )}.actions.ts`;
+
+    const text = host.read(componentPath);
+    if (text === null) {
+      throw new SchematicsException(`File ${componentPath} does not exist.`);
+    }
+    const sourceText = text.toString('utf-8');
+    const source = ts.createSourceFile(
+      componentPath,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true
+    );
+
+    insert(host, componentPath, [
+      ...addEnumeratorValues(source, componentPath, `${clazzName}ActionTypes`, [
+        {
+          name: 'LoadData',
+          value: `[${clazzName}] Load Data`
+        },
+        {
+          name: 'DataLoaded',
+          value: `[${clazzName}] Data Loaded`
+        }
+      ]),
+      addClass(
+        source,
+        componentPath,
+        'LoadData',
+        stripIndents`
+        export class LoadData implements Action {
+          readonly type = ${clazzName}ActionTypes.LoadData;
+          constructor(public payload: any) { }
+        }`
+      ),
+      addClass(
+        source,
+        componentPath,
+        'DataLoaded',
+        stripIndents`
+        export class DataLoaded implements Action {
+          readonly type = ${clazzName}ActionTypes.DataLoaded;
+          constructor(public payload: any) { }
+        }`
+      ),
+      addUnionTypes(source, componentPath, `${clazzName}Actions`, [
+        'LoadData',
+        'DataLoaded'
+      ])
+    ]);
+  };
+}
+
+/**
+ * Add DataLoaded action to <featureName>.reducer.ts
+ */
+function addDataLoadedToReducer(context: RequestContext): Rule {
+  return noop();
+}
+
+function addImportsToModule(context: RequestContext): Rule {
+  return (host: Tree) => {
+    if (context.options.onlyAddFiles) {
       return host;
     }
 
-    if (!host.exists(options.module)) {
+    if (!host.exists(context.options.module)) {
       throw new Error('Specified module does not exist');
     }
 
-    const modulePath = options.module;
+    const modulePath = context.options.module;
 
     const sourceText = host.read(modulePath)!.toString('utf-8');
     const source = ts.createSourceFile(
@@ -54,7 +198,7 @@ function addImportsToModule(name: string, options: Schema): Rule {
       true
     );
 
-    if (options.onlyEmptyRoot) {
+    if (context.options.onlyEmptyRoot) {
       insert(host, modulePath, [
         insertImport(source, modulePath, 'StoreModule', '@ngrx/store'),
         insertImport(source, modulePath, 'EffectsModule', '@ngrx/effects'),
@@ -92,19 +236,19 @@ function addImportsToModule(name: string, options: Schema): Rule {
       ]);
       return host;
     } else {
-      const reducerPath = `./${toFileName(options.directory)}/${toFileName(
-        name
-      )}.reducer`;
-      const effectsPath = `./${toFileName(options.directory)}/${toFileName(
-        name
-      )}.effects`;
-      const initPath = `./${toFileName(options.directory)}/${toFileName(
-        name
+      const reducerPath = `./${toFileName(
+        context.options.directory
+      )}/${toFileName(context.featureName)}.reducer`;
+      const effectsPath = `./${toFileName(
+        context.options.directory
+      )}/${toFileName(context.featureName)}.effects`;
+      const initPath = `./${toFileName(context.options.directory)}/${toFileName(
+        context.featureName
       )}.init`;
 
-      const reducerName = `${toPropertyName(name)}Reducer`;
-      const effectsName = `${toClassName(name)}Effects`;
-      const initName = `${toPropertyName(name)}InitialState`;
+      const reducerName = `${toPropertyName(context.featureName)}Reducer`;
+      const effectsName = `${toClassName(context.featureName)}Effects`;
+      const initName = `${toPropertyName(context.featureName)}InitialState`;
 
       const common = [
         insertImport(source, modulePath, 'StoreModule', '@ngrx/store'),
@@ -115,7 +259,7 @@ function addImportsToModule(name: string, options: Schema): Rule {
         ...addProviderToModule(source, modulePath, effectsName)
       ];
 
-      if (options.root) {
+      if (context.options.root) {
         insert(host, modulePath, [
           ...common,
           insertImport(
@@ -140,8 +284,12 @@ function addImportsToModule(name: string, options: Schema): Rule {
           ...addImportToModule(
             source,
             modulePath,
-            `StoreModule.forRoot({${toPropertyName(name)}: ${reducerName}}, {
-              initialState: {${toPropertyName(name)}: ${initName}},
+            `StoreModule.forRoot({${toPropertyName(
+              context.featureName
+            )}: ${reducerName}}, {
+              initialState: {${toPropertyName(
+                context.featureName
+              )}: ${initName}},
               metaReducers: !environment.production ? [storeFreeze] : []
             })`
           ),
@@ -168,7 +316,7 @@ function addImportsToModule(name: string, options: Schema): Rule {
             source,
             modulePath,
             `StoreModule.forFeature('${toPropertyName(
-              name
+              context.featureName
             )}', ${reducerName}, {initialState: ${initName}})`
           ),
           ...addImportToModule(
@@ -197,48 +345,42 @@ function addNgRxToPackageJson() {
     if (!json['dependencies']['@ngrx/store']) {
       json['dependencies']['@ngrx/store'] = ngrxVersion;
     }
-    if (!json['dependencies']['@ngrx/router-store']) {
-      json['dependencies']['@ngrx/router-store'] = routerStoreVersion;
-    }
     if (!json['dependencies']['@ngrx/effects']) {
       json['dependencies']['@ngrx/effects'] = ngrxVersion;
+    }
+    if (!json['dependencies']['@ngrx/entity']) {
+      json['dependencies']['@ngrx/entity'] = ngrxVersion;
     }
     if (!json['dependencies']['@ngrx/store-devtools']) {
       json['dependencies']['@ngrx/store-devtools'] = ngrxVersion;
     }
+    if (!json['dependencies']['@ngrx/router-store']) {
+      json['dependencies']['@ngrx/router-store'] = routerStoreVersion;
+    }
     if (!json['dependencies']['ngrx-store-freeze']) {
       json['dependencies']['ngrx-store-freeze'] = ngrxStoreFreezeVersion;
     }
+
     host.overwrite('package.json', serializeJson(json));
     return host;
   };
 }
 
-export default function(schema: Schema): Rule {
-  return wrapIntoFormat(() => {
-    const options = normalizeOptions(schema);
-    const name = options.name;
-    const moduleDir = path.dirname(options.module);
-
-    if (options.onlyEmptyRoot) {
-      return chain([
-        addImportsToModule(name, options),
-        options.skipPackageJson ? noop() : addNgRxToPackageJson()
-      ]);
-    } else {
-      const templateSource = apply(url('./files'), [
-        template({ ...options, tmpl: '', ...names(name) }),
-        move(moduleDir)
-      ]);
-      return chain([
-        branchAndMerge(chain([mergeWith(templateSource)])),
-        addImportsToModule(name, options),
-        options.skipPackageJson ? noop() : addNgRxToPackageJson()
-      ]);
-    }
-  });
+/**
+ * @ngrx/schematics generates files in:
+ *    `/apps/<ngrxFeatureName>/`
+ *
+ * For Nx monorepo, however, we need to move the files to either
+ *  a) apps/<appName>/src/app/+state, or
+ *  b) libs/<libName>/src/+state
+ */
+function moveToNxMonoTree(ngrxFeatureName, nxDir): Rule {
+  return move(`app/${ngrxFeatureName}`, path.join(nxDir, '+state'));
 }
 
-function normalizeOptions(options: Schema): Schema {
+/**
+ * Extract the parent 'directory' for the specified
+ */
+function normalizeOptions(options: NgrxOptions): NgrxOptions {
   return { ...options, directory: toFileName(options.directory) };
 }
