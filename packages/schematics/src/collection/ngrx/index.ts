@@ -51,7 +51,8 @@ import {
 import {
   insert,
   addImportToModule,
-  addProviderToModule
+  addProviderToModule,
+  offset
 } from '../../utils/ast-utils';
 
 import { serializeJson } from '../../utils/fileutils';
@@ -83,8 +84,10 @@ export default function generateNgrxCollection(_options: NgrxOptions): Rule {
       branchAndMerge(generateNxFiles(context)),
 
       addImportsToModule(context),
+
       updateNgrxActions(context),
       updateNgrxReducers(context),
+      updateNgrxEffects(context),
 
       options.skipPackageJson ? noop() : addNgRxToPackageJson()
     ]);
@@ -250,10 +253,23 @@ function updateNgrxReducers(context: RequestContext): Rule {
 
       return actions;
     };
+    const updateSwitchStatement = () => {
+      const toInsert = stripIndents`
+        case ${clazzName}ActionTypes.DataLoaded: {
+         return { ...state, ...action.payload };
+        }
+      `;
+      return insertAfterLastOccurrence(
+        findNodes(source, ts.SyntaxKind.SwitchStatement),
+        toInsert,
+        componentPath,
+        0,
+        ts.SyntaxKind.CaseClause
+      );
+    };
 
     insert(host, componentPath, [
       removeStateInterface(),
-      ...updateReducerFn(),
       insertImport(
         source,
         modulePath,
@@ -265,7 +281,69 @@ function updateNgrxReducers(context: RequestContext): Rule {
         modulePath,
         `${clazzName}Actions`,
         `./${context.featureName}.actions`
-      )
+      ),
+      ...updateReducerFn(),
+      updateSwitchStatement()
+    ]);
+  };
+}
+
+function updateNgrxEffects(context: RequestContext): Rule {
+  return (host: Tree) => {
+    const clazzName = toClassName(context.featureName);
+    const componentPath = buildNameToNgrxFile(context, 'effects.ts');
+    const featureInterfaces = `./${context.featureName}.interfaces`;
+    const text = host.read(componentPath);
+
+    if (text === null) {
+      throw new SchematicsException(`File ${componentPath} does not exist.`);
+    }
+
+    const modulePath = context.options.module;
+    const sourceText = text.toString('utf-8');
+    const source = ts.createSourceFile(
+      componentPath,
+      sourceText,
+      ts.ScriptTarget.Latest,
+      true
+    );
+    const updateConstructor = () => {
+      const toInsert = stripIndents`
+        , private dataPersistence: DataPersistence<${clazzName}>
+      `;
+      const astConstructor = findNodes(source, ts.SyntaxKind.Constructor)[0];
+      const lastParameter = findNodes(
+        astConstructor,
+        ts.SyntaxKind.Parameter
+      ).pop();
+
+      return new InsertChange(componentPath, lastParameter.end, toInsert);
+    };
+    const addEffect = () => {
+      const toInsert = `\n
+  @Effect()
+  loadData = this.dataPersistence.fetch('LOAD_DATA', {
+   run: (action: LoadData, state: ${clazzName}) => {
+     return new DataLoaded({ });
+   },
+  
+   onError: (action: LoadData, error) => {
+     console.error('Error', error);
+   }
+  });
+       `;
+      const astConstructor = findNodes(source, ts.SyntaxKind.Constructor)[0];
+      return new InsertChange(componentPath, astConstructor.pos, toInsert);
+    };
+
+    const actionsFile = `./${context.featureName}.actions`;
+
+    insert(host, componentPath, [
+      insertImport(source, modulePath, 'DataPersistence', `@nrwl/nx`),
+      insertImport(source, modulePath, 'LoadData, DataLoaded', actionsFile),
+      insertImport(source, modulePath, `${clazzName}`, featureInterfaces),
+      updateConstructor(),
+      addEffect()
     ]);
   };
 }

@@ -284,5 +284,30 @@ describe('ngrx', () => {
     expect(content).toContain(
       'function userReducer(state = initialState, action: UserActions): User'
     );
+    expect(content).toContain('case UserActionTypes.DataLoaded');
+  });
+
+  it('should enhance the ngrx effects', () => {
+    const appConfig = getAppConfig();
+    const tree = schematicRunner.runSchematic(
+      'ngrx',
+      {
+        name: 'user',
+        module: appConfig.appModule
+      },
+      appTree
+    );
+
+    const statePath = `${findModuleParent(appConfig.appModule)}/+state`;
+    const content = getFileContent(tree, `${statePath}/user.effects.ts`);
+    const firstParam = 'private actions$: Actions';
+    const secondParam = 'private dataPersistence: DataPersistence<User>';
+    const actionImports = 'UserActions, UserActionTypes, LoadData, DataLoaded';
+
+    expect(content).toContain(`import { DataPersistence } from \'@nrwl/nx\'`);
+    expect(content).toContain(
+      `import { ${actionImports} } from \'./user.actions\'`
+    );
+    expect(content).toContain(`constructor(${firstParam}, ${secondParam})`);
   });
 });
